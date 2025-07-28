@@ -64,7 +64,7 @@ jobs:
             --comment "Deploying Frontend App" \
             --instance-ids ${{ steps.select-ec2.outputs.instance_id }} \
             --parameters commands=["bash ~/scripts/deploy-ecommerce-frontend.sh"] \
-            --region ${{ secrets.AWS_REGION }}
+            --region : 'us-east-1'
 
       - name: Deploy Backend via SSM
         if: steps.backend-changed.outputs.changed == 'true'
@@ -74,4 +74,4 @@ jobs:
             --comment "Deploying Backend App" \
             --instance-ids ${{ steps.select-ec2.outputs.instance_id }} \
             --parameters commands=["bash ~/scripts/deploy-ecommerce-backend.sh"] \
-            --region ${{ secrets.AWS_REGION }}
+            --region : 'us-east-1'
