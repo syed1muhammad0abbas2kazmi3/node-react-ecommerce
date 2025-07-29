@@ -12,6 +12,10 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: ${{ github.ref_name }}
+    env:
+      INSTANCE_ID_DEV: ${{ secrets.EC2_INSTANCE_ID_DEV }}
+      INSTANCE_ID_MAIN: ${{ secrets.EC2_INSTANCE_ID_MAIN }}
 
     steps:
       - name: Checkout Code
@@ -24,54 +28,81 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: 'us-east-1'
 
-      - name: Determine Target EC2 Instance
-        id: select-ec2
+      - name: Detect Changes
+        id: changes
         run: |
-          BRANCH="${GITHUB_REF##*/}"
+          echo "FRONTEND_CHANGED=false" >> $GITHUB_ENV
+          echo "BACKEND_CHANGED=false" >> $GITHUB_ENV
+          git fetch origin ${{ github.event.before }}
+          git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep "^frontend/" && echo "FRONTEND_CHANGED=true" >> $GITHUB_ENV || true
+          git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep "^backend/" && echo "BACKEND_CHANGED=true" >> $GITHUB_ENV || true
+
+      - name: Set Instance ID
+        id: set-instance
+        run: |
+          BRANCH=$(echo "${{ github.ref }}" | awk -F'/' '{print $3}')
           if [[ "$BRANCH" == "dev" ]]; then
-            echo "instance_id=${{ secrets.EC2_INSTANCE_ID_DEV }}" >> $GITHUB_OUTPUT
+            echo "INSTANCE_ID=${{ secrets.EC2_INSTANCE_ID_DEV }}" >> $GITHUB_ENV
           elif [[ "$BRANCH" == "main" ]]; then
-            echo "instance_id=${{ secrets.EC2_INSTANCE_ID_MAIN }}" >> $GITHUB_OUTPUT
-          else
-            echo "Unknown branch. Exiting." && exit 1
+            echo "INSTANCE_ID=${{ secrets.EC2_INSTANCE_ID_MAIN }}" >> $GITHUB_ENV
           fi
 
-      - name: Check for Frontend Changes
-        id: frontend-changed
+      - name: Deploy Frontend
+        if: env.FRONTEND_CHANGED == 'true'
         run: |
-          git fetch origin ${{ github.event.before }}
-          if git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep '^frontend/'; then
-            echo "changed=true" >> $GITHUB_OUTPUT
-          else
-            echo "changed=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Check for Backend Changes
-        id: backend-changed
-        run: |
-          git fetch origin ${{ github.event.before }}
-          if git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep '^backend/'; then
-            echo "changed=true" >> $GITHUB_OUTPUT
-          else
-            echo "changed=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Deploy Frontend via SSM
-        if: steps.frontend-changed.outputs.changed == 'true'
-        run: |
-          aws ssm send-command \
+          BRANCH=$(echo "${{ github.ref }}" | awk -F'/' '{print $3}')
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --comment "Deploying Frontend App" \
-            --instance-ids ${{ steps.select-ec2.outputs.instance_id }} \
-            --parameters commands=["bash ~/scripts/deploy-ecommerce-frontend.sh"] \
-            --region : 'us-east-1'
+            --parameters '{"commands":["export HOME=/home/ssm-user && sudo -u ssm-user bash /home/ssm-user/scripts/deploy-ecommerce-frontend.sh"]}' \
+            --comment "Deploying Frontend to $BRANCH" \
+            --query "Command.CommandId" \
+            --output text \
+            --region us-east-1)
 
-      - name: Deploy Backend via SSM
-        if: steps.backend-changed.outputs.changed == 'true'
+          echo "Frontend Command ID: $COMMAND_ID"
+          for i in {1..30}; do
+            STATUS=$(aws ssm list-command-invocations --command-id "$COMMAND_ID" --details --query "CommandInvocations[].Status" --output text)
+            if [[ "$STATUS" == "Success" || "$STATUS" == "Failed" || "$STATUS" == "Cancelled" ]]; then
+              break
+            fi
+            sleep 5
+          done
+
+          OUTPUT=$(aws ssm list-command-invocations --command-id "$COMMAND_ID" --details --query "CommandInvocations[].CommandPlugins[].Output" --output text)
+          echo "SSM Command Output: $OUTPUT"
+          if [ "$STATUS" != "Success" ]; then
+            echo "Frontend deployment failed with status: $STATUS"
+            exit 1
+          fi
+          echo "Frontend deployment succeeded"
+
+      - name: Deploy Backend
+        if: env.BACKEND_CHANGED == 'true'
         run: |
-          aws ssm send-command \
+          BRANCH=$(echo "${{ github.ref }}" | awk -F'/' '{print $3}')
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --comment "Deploying Backend App" \
-            --instance-ids ${{ steps.select-ec2.outputs.instance_id }} \
-            --parameters commands=["bash ~/scripts/deploy-ecommerce-backend.sh"] \
-            --region : 'us-east-1'
+            --parameters '{"commands":["bash /home/ssm-user/scripts/deploy-ecommerce-backend.sh"]}' \
+            --comment "Deploying Backend to $BRANCH" \
+            --query "Command.CommandId" \
+            --output text \
+            --region us-east-1)
+
+          echo "Backend Command ID: $COMMAND_ID"
+          for i in {1..30}; do
+            STATUS=$(aws ssm list-command-invocations --command-id "$COMMAND_ID" --details --query "CommandInvocations[].Status" --output text)
+            if [[ "$STATUS" == "Success" || "$STATUS" == "Failed" || "$STATUS" == "Cancelled" ]]; then
+              break
+            fi
+            sleep 5
+          done
+
+          OUTPUT=$(aws ssm list-command-invocations --command-id "$COMMAND_ID" --details --query "CommandInvocations[].CommandPlugins[].Output" --output text)
+          echo "SSM Command Output: $OUTPUT"
+          if [ "$STATUS" != "Success" ]; then
+            echo "Backend deployment failed with status: $STATUS"
+            exit 1
+          fi
+          echo "Backend deployment succeeded"
