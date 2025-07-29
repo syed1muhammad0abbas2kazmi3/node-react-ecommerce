@@ -84,7 +84,7 @@ jobs:
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --parameters '{"commands":["bash /home/ssm-user/scripts/deploy-ecommerce-backend.sh"]}' \
+            --parameters '{"commands":["export HOME=/home/ssm-user && sudo -u ssm-user bash /home/ssm-user/scripts/deploy-ecommerce-backend.sh $BRANCH"]}' \
             --comment "Deploying Backend to $BRANCH" \
             --query "Command.CommandId" \
             --output text \
