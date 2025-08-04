@@ -1,15 +1,13 @@
-name: Docker Deploy via SSM
+name: Deploy via SSM (Dockerfile Only)
 
 on:
   push:
     branches:
       - main
-      - dev
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: ${{ github.ref_name }}
 
     steps:
       - name: Checkout Code
@@ -22,24 +20,15 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
-      - name: Set Instance ID from Branch
-        id: set-instance
+      - name: Run deploy-docker.sh via SSM
         run: |
-          BRANCH=$(echo "${{ github.ref }}" | awk -F'/' '{print $3}')
-          if [[ "$BRANCH" == "main" ]]; then
-            echo "INSTANCE_ID=${{ secrets.EC2_INSTANCE_ID_MAIN }}" >> $GITHUB_ENV
-          elif [[ "$BRANCH" == "dev" ]]; then
-            echo "INSTANCE_ID=${{ secrets.EC2_INSTANCE_ID_DEV }}" >> $GITHUB_ENV
-          fi
-          echo "BRANCH=$BRANCH" >> $GITHUB_ENV
+          INSTANCE_ID=${{ secrets.EC2_INSTANCE_ID_MAIN }}
 
-      - name: Deploy via SSM (Docker)
-        run: |
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --parameters '{"commands":["export HOME=/home/ssm-user && sudo -u ssm-user bash /home/ssm-user/scripts/deploy-docker.sh $BRANCH"]}' \
-            --comment "Docker Deployment for $BRANCH" \
+            --comment "Docker deploy without compose and nginx" \
+            --parameters '{"commands":["export HOME=/home/ssm-user && sudo -u ssm-user bash /home/ssm-user/scripts/deploy-docker.sh"]}' \
             --query "Command.CommandId" \
             --output text)
 
@@ -66,8 +55,8 @@ jobs:
           echo "SSM Command Output: $OUTPUT"
 
           if [ "$STATUS" != "Success" ]; then
-            echo "Deployment failed with status: $STATUS"
+            echo "❌ Deployment failed with status: $STATUS"
             exit 1
           fi
 
-          echo "✅ Docker-based deployment succeeded for $BRANCH"
+          echo "✅ Docker deployment succeeded"
